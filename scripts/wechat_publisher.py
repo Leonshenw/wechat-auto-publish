@@ -47,31 +47,64 @@ def get_access_token():
     return token
 
 def search_hot_topics():
-    """搜索科技热点（使用公开API）"""
-    # 使用 Toutiao API 或 News API
-    # 这里使用一个简单的公开新闻源
-    url = "https://v.api.aa1.cn/api/toutiao-max/?type=科技"
+    """搜索科技热点（使用公开API）- 返回5个话题"""
+    topics = []
+    
     try:
+        # 方法1: 使用头条API
+        url = "https://v.api.aa1.cn/api/toutiao-max/?type=科技"
         resp = requests.get(url, timeout=10)
         data = resp.json()
         if 'data' in data:
-            topics = []
             for item in data['data'][:5]:
                 topics.append({
                     'title': item.get('title', ''),
                     'url': item.get('url', ''),
                     'summary': item.get('summary', '')
                 })
-            return topics
+            if len(topics) >= 5:
+                return topics[:5]
     except:
         pass
     
-    # 备选：使用默认话题
-    return [{
-        'title': 'AI技术发展',
-        'url': '',
-        'summary': '人工智能技术持续发展和应用'
-    }]
+    try:
+        # 方法2: 使用另一个新闻源
+        url = "https://api.vvhan.com/api/hotlist?type=zhihuHot"
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        if 'data' in data:
+            for item in data['data'][:5]:
+                topics.append({
+                    'title': item.get('title', ''),
+                    'url': item.get('url', ''),
+                    'summary': item.get('desc', '')
+                })
+            if len(topics) >= 5:
+                return topics[:5]
+    except:
+        pass
+    
+    # 如果API都失败，使用默认话题列表
+    default_topics = [
+        {'title': 'AI大模型最新突破', 'url': '', 'summary': '人工智能大模型技术持续突破，应用场景不断扩展'},
+        {'title': '量子计算商业化进展', 'url': '', 'summary': '量子计算技术逐步走向商业化应用'},
+        {'title': '自动驾驶技术革新', 'url': '', 'summary': '自动驾驶技术迎来新一轮技术革新'},
+        {'title': '元宇宙产业发展趋势', 'url': '', 'summary': '元宇宙产业生态逐步完善，应用场景丰富'},
+        {'title': '5G应用落地案例', 'url': '', 'summary': '5G技术在各行业的应用案例不断涌现'}
+    ]
+    
+    # 补充到5个
+    while len(topics) < 5:
+        if len(default_topics) > 0:
+            topics.append(default_topics.pop(0))
+        else:
+            topics.append({
+                'title': f'科技热点{len(topics)+1}',
+                'url': '',
+                'summary': '科技行业最新动态'
+            })
+    
+    return topics[:5]
 
 def generate_article(topic):
     """使用 OpenAI API 生成文章"""
@@ -268,51 +301,59 @@ def add_draft(access_token, title, content, thumb_media_id=''):
     return result["media_id"]
 
 def main():
-    """主函数"""
+    """主函数 - 生成5篇热点文章"""
     print("=" * 60)
     print("微信公众号自动发布 - GitHub Actions 版本")
     print("=" * 60)
     
     try:
         # 1. 获取 access_token
-        print("\n[1/5] 获取 access_token...")
+        print("\n[1/4] 获取 access_token...")
         token = get_access_token()
         print(f"✅ 获取成功: {token[:20]}...")
         
-        # 2. 搜索热点
-        print("\n[2/5] 搜索科技热点...")
+        # 2. 搜索热点（获取5个话题）
+        print("\n[2/4] 搜索科技热点...")
         topics = search_hot_topics()
-        if topics:
-            topic = topics[0]
-            print(f"✅ 找到话题: {topic['title']}")
-        else:
-            topic = {'title': '科技创新观察', 'summary': '科技行业最新动态'}
-            print("⚠️  使用默认话题")
+        print(f"✅ 找到 {len(topics)} 个话题")
         
-        # 3. 生成文章
-        print("\n[3/5] 生成文章...")
-        article_text = generate_article(topic)
-        print(f"✅ 文章生成完成，字数: {len(article_text)}")
+        # 3. 生成并上传5篇文章
+        print("\n[3/4] 生成并上传文章...")
+        success_count = 0
         
-        # 4. 转换为微信HTML
-        print("\n[4/5] 转换为微信HTML格式...")
-        html_content = convert_to_wechat_html(article_text)
-        print("✅ 转换完成")
+        for i, topic in enumerate(topics[:5], 1):
+            print(f"\n--- 文章 {i}/5 ---")
+            print(f"话题: {topic['title']}")
+            
+            try:
+                # 生成文章
+                article_text = generate_article(topic)
+                print(f"  ✅ 文章生成完成，字数: {len(article_text)}")
+                
+                # 转换为微信HTML
+                html_content = convert_to_wechat_html(article_text)
+                
+                # 上传草稿
+                media_id = add_draft(token, topic['title'], html_content)
+                print(f"  ✅ 上传成功! media_id: {media_id}")
+                
+                success_count += 1
+                
+            except Exception as e:
+                print(f"  ❌ 文章 {i} 失败: {e}")
+                continue
         
-        # 5. 上传草稿
-        print("\n[5/5] 上传草稿到公众号...")
-        # 注意：这里省略了封面图上传（需要图片）
-        # 实际使用时，可以先用默认封面图或跳过
-        media_id = add_draft(token, topic['title'], html_content)
-        print(f"✅ 上传成功! media_id: {media_id}")
+        print(f"\n✅ 完成: {success_count}/5 篇文章上传成功")
         
-        # 保存日志
+        # 4. 保存日志
+        print("\n[4/4] 保存执行日志...")
         log_file = f"/tmp/publish_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         with open(log_file, 'w') as f:
             f.write(f"执行时间: {datetime.now()}\n")
-            f.write(f"文章标题: {topic['title']}\n")
-            f.write(f"草稿 media_id: {media_id}\n")
-            f.write("状态: 成功\n")
+            f.write(f"成功上传: {success_count}/5 篇\n")
+            f.write(f"话题列表:\n")
+            for i, topic in enumerate(topics[:5], 1):
+                f.write(f"  {i}. {topic['title']}\n")
         
         print("\n" + "=" * 60)
         print("🎉 发布任务完成！")
