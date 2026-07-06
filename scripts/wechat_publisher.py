@@ -83,52 +83,192 @@ def get_chinese_font(size=40):
 
 
 def generate_cover_image(title, index=0):
-    """生成带中文的封面图（900x500）"""
-    from PIL import Image, ImageDraw
+    """
+    生成专业级科技风封面图（900x500）
+    - 渐变背景 + 几何装饰 + 发光节点 + 专业排版
+    """
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-    img = Image.new('RGB', (900, 500), color=(45, 55, 72))
+    W, H = 900, 500
+    img = Image.new('RGB', (W, H), color=(10, 10, 20))
     draw = ImageDraw.Draw(img)
 
-    # 配色方案 - 科技感渐变色
-    color_schemes = [
-        {"bg": (30, 58, 138),   "accent": (59, 130, 246)},    # 深蓝
-        {"bg": (88, 28, 135),   "accent": (168, 85, 247)},    # 深紫
-        {"bg": (6, 78, 59),     "accent": (34, 197, 94)},     # 深绿
-        {"bg": (120, 53, 15),   "accent": (245, 158, 11)},    # 深橙
-        {"bg": (83, 31, 33),    "accent": (239, 68, 68)},     # 深红
+    # ============================================================
+    # 配色方案（科技感）
+    # ============================================================
+    schemes = [
+        {"name": "AI蓝",   "c1": (8, 18, 55),  "c2": (20, 60, 150), "accent": (0, 200, 255), "glow": (0, 150, 255)},
+        {"name": "量子紫", "c1": (30, 10, 60),  "c2": (90, 30, 180), "accent": (180, 100, 255), "glow": (120, 50, 220)},
+        {"name": "生态绿", "c1": (5, 35, 20),   "c2": (15, 100, 60), "accent": (0, 230, 130), "glow": (0, 180, 90)},
+        {"name": "未来橙", "c1": (50, 20, 5),   "c2": (160, 80, 20), "accent": (255, 160, 50), "glow": (220, 120, 20)},
+        {"name": "数据红", "c1": (55, 10, 15),  "c2": (160, 30, 50), "accent": (255, 80, 100), "glow": (200, 40, 60)},
     ]
-    scheme = color_schemes[index % len(color_schemes)]
+    s = schemes[index % len(schemes)]
+    c1, c2, accent, glow = s["c1"], s["c2"], s["accent"], s["glow"]
 
-    # 绘制背景渐变效果（用矩形模拟）
-    draw.rectangle([0, 0, 900, 500], fill=scheme["bg"])
+    # ============================================================
+    # 1. 渐变背景（用横条模拟）
+    # ============================================================
+    for y in range(H):
+        t = y / H
+        r = int(c1[0] + (c2[0] - c1[0]) * t)
+        g = int(c1[1] + (c2[1] - c1[1]) * t)
+        b = int(c1[2] + (c2[2] - c1[2]) * t)
+        draw.rectangle([(0, y), (W, y + 1)], fill=(r, g, b))
 
-    # 装饰性几何图形 - 右侧大圆
-    draw.ellipse([650, 100, 1100, 550], fill=scheme["accent"])
-    # 半透明覆盖
-    overlay = Image.new('RGBA', (900, 500), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([0, 350, 900, 500], fill=(0, 0, 0, 160))
-    img.paste(Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB'), (0, 0))
-
-    # 重新获取 draw 对象
+    # ============================================================
+    # 2. 底部发光区域（模拟灯光效果）
+    # ============================================================
+    glow_layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
+    cx = W * 0.5
+    cy = H * 0.65
+    # 大椭圆发光
+    for i in range(60, 0, -2):
+        alpha = int(8 * (1 - i / 60))
+        if alpha < 1:
+            break
+        glow_draw.ellipse(
+            [cx - i * 2.5, cy - i * 1.2, cx + i * 2.5, cy + i * 1.2],
+            fill=glow + (alpha,)
+        )
+    img = Image.alpha_composite(img.convert('RGBA'), glow_layer).convert('RGB')
     draw = ImageDraw.Draw(img)
 
-    # 加载中文字体
-    font_title = get_chinese_font(52)
-    font_sub = get_chinese_font(26)
-    font_brand = get_chinese_font(22)
+    # ============================================================
+    # 3. 几何装饰 - 网格线
+    # ============================================================
+    grid_color = accent + (40,)
+    # 竖线
+    for x in range(0, W, 60):
+        draw.rectangle([x, 0, x + 1, H], fill=accent)
+    # 横线
+    for y in range(0, H, 60):
+        draw.rectangle([0, y, W, y + 1], fill=accent)
 
-    # 标题文字（截断）
-    title_text = title[:10] + ".." if len(title) > 10 else title
-    draw.text((60, 170), title_text, fill=(255, 255, 255), font=font_title)
+    # ============================================================
+    # 4. 几何装饰 - 六边形节点（科技感）
+    # ============================================================
+    import math
+    nodes = [
+        (W * 0.75, H * 0.35, 45),
+        (W * 0.85, H * 0.55, 35),
+        (W * 0.65, H * 0.6, 30),
+        (W * 0.9, H * 0.3, 25),
+    ]
+    for nx, ny, nr in nodes:
+        # 六边形
+        points = []
+        for i in range(6):
+            angle = math.radians(60 * i - 30)
+            px = nx + nr * math.cos(angle)
+            py = ny + nr * math.sin(angle)
+            points.append((px, py))
+        draw.polygon(points, outline=accent, width=2)
+        # 中心点
+        draw.ellipse([nx - 4, ny - 4, nx + 4, ny + 4], fill=accent)
+
+    # ============================================================
+    # 5. 几何装饰 - 连接线（数据流动效果）
+    # ============================================================
+    connection_color = accent + (120,)
+    for i in range(len(nodes) - 1):
+        x1, y1, _ = nodes[i]
+        x2, y2, _ = nodes[i + 1]
+        draw.line([(x1, y1), (x2, y2)], fill=accent, width=2)
+
+    # ============================================================
+    # 6. 装饰 - 右上角大圆弧
+    # ============================================================
+    draw.arc([W - 350, -100, W + 150, 400], 0, 360, fill=accent, width=3)
+    draw.arc([W - 280, -50, W + 80, 350], 0, 360, fill=accent, width=2)
+
+    # ============================================================
+    # 7. 文字排版
+    # ============================================================
+    font_title = get_chinese_font(48)
+    font_sub = get_chinese_font(22)
+    font_tag = get_chinese_font(18)
+
+    # 标题区域背景（半透明黑色块）
+    title_bg = [
+        (50, 310), (W - 280, 310),
+        (W - 280, 480), (50, 480)
+    ]
+    # 用 RGBA 绘制半透明背景
+    overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([50, 310, W - 280, 480], fill=(0, 0, 0, 170))
+    img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+    draw = ImageDraw.Draw(img)
+
+    # 主标题（自动换行）
+    def wrap_text(text, max_width, font):
+        words = text
+        lines = []
+        current = ""
+        for char in words:
+            test = current + char
+            bbox = draw.textbbox((0, 0), test, font=font)
+            w = bbox[2] - bbox[0]
+            if w > max_width and current:
+                lines.append(current)
+                current = char
+            else:
+                current = test
+        if current:
+            lines.append(current)
+        return lines[:2]  # 最多2行
+
+    max_w = W - 360
+    title_lines = wrap_text(title, max_w, font_title)
+
+    y_pos = 325
+    for line in title_lines:
+        # 文字描边（黑色）
+        for dx, dy in [(-2, -2), (-2, 2), (2, -2), (2, 2)]:
+            draw.text((54 + dx, y_pos + dy), line, fill=(0, 0, 0), font=font_title)
+        # 主文字（白色）
+        draw.text((54, y_pos), line, fill=(255, 255, 255), font=font_title)
+        y_pos += 58
+
     # 副标题线
-    draw.rectangle([60, 245, 200, 249], fill=scheme["accent"])
-    # 品牌名
-    draw.text((60, 270), "疯魔老卫 | 科技洞察", fill=(180, 190, 200), font=font_brand)
+    draw.rectangle([54, y_pos + 8, 54 + 80, y_pos + 11], fill=accent)
 
-    # 保存到 BytesIO
+    # 品牌标签
+    tag_text = "疯魔老卫 | 科技洞察"
+    draw.text((54, y_pos + 20), tag_text, fill=(180, 190, 200), font=font_tag)
+
+    # ============================================================
+    # 8. 右侧竖排标签
+    # ============================================================
+    draw.rectangle([W - 35, 0, W, H], fill=(0, 0, 0))
+    draw.text((W - 28, H // 2 - 60), "科技", fill=accent, font=font_tag)
+    # 竖排效果（逐个字符）
+    for i, ch in enumerate("深度解读"):
+        draw.text((W - 28, H // 2 + i * 24), ch, fill=(150, 150, 150), font=font_tag)
+
+    # ============================================================
+    # 9. 底部渐变遮罩
+    # ============================================================
+    bottom_overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+    bottom_draw = ImageDraw.Draw(bottom_overlay)
+    for y in range(H - 60, H):
+        alpha = int(180 * (y - (H - 60)) / 60)
+        bottom_draw.rectangle([0, y, W, y + 1], fill=(0, 0, 0, min(alpha, 180)))
+    img = Image.alpha_composite(img.convert('RGBA'), bottom_overlay).convert('RGB')
+
+    # ============================================================
+    # 10. 高斯模糊（轻微，让画面更柔和）
+    # ============================================================
+    img = img.filter(ImageFilter.GaussianBlur(radius=0.5))
+
+    # 重新叠上清晰的文字层（从原图裁剪文字区域）
+    # 为简化，跳过此步（PIL 不易实现）
+
+    # 保存
     buf = io.BytesIO()
-    img.save(buf, format='JPEG', quality=90)
+    img.save(buf, format='JPEG', quality=92)
     buf.seek(0)
     return buf
 
