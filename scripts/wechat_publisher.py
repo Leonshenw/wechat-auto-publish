@@ -9,17 +9,22 @@ import sys
 import json
 import requests
 from datetime import datetime
+import tempfile
+
+# 临时文件目录（兼容 Windows/Linux）
+TMP_DIR = tempfile.gettempdir()
 
 # 从环境变量获取配置
 WECHAT_APPID = os.environ.get('WECHAT_APPID', 'wx22254d05de1f5809')
-WECHAT_APPSECRET = os.environ.get('WECHAT_APPSECRET', '9kQK7UXFCfHP7CxLiTbrDzyNsCXCfPksJME5XrbPcCoD')
+WECHAT_APPSECRET = os.environ.get('WECHAT_APPSECRET', '0990b6d901ebee8b66c1e9fe481029a4')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 BASE_URL = "https://api.weixin.qq.com/cgi-bin"
 
 def get_access_token():
     """获取 access_token"""
-    token_file = "/tmp/wechat_token.json"
+    import tempfile
+    token_file = os.path.join(tempfile.gettempdir(), "wechat_token.json")
     
     # 检查缓存
     if os.path.exists(token_file):
@@ -45,6 +50,65 @@ def get_access_token():
         }, f)
     
     return token
+
+def generate_cover_image(title, index=0):
+    """使用 PIL 生成简单的封面图"""
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+
+    # 创建 900x500 的图片（微信推荐封面尺寸）
+    img = Image.new('RGB', (900, 500), color=(45, 55, 72))
+    draw = ImageDraw.Draw(img)
+
+    # 渐变背景效果（简化版：纯色 + 装饰）
+    colors = [
+        (66, 153, 225),   # 蓝
+        (237, 100, 166),  # 粉
+        (72, 187, 120),   # 绿
+        (236, 201, 75),   # 黄
+        (159, 122, 234),  # 紫
+    ]
+    base_color = colors[index % len(colors)]
+
+    # 绘制装饰矩形
+    draw.rectangle([0, 0, 900, 500], fill=base_color)
+    # 右下角深色装饰块
+    draw.rectangle([600, 300, 900, 500], fill=(0, 0, 0, 80))
+
+    # 尝试加载字体
+    try:
+        font_large = ImageFont.truetype("arial.ttf", 48)
+        font_small = ImageFont.truetype("arial.ttf", 24)
+    except:
+        font_large = ImageFont.load_default()
+        font_small = ImageFont.load_default()
+
+    # 绘制标题文字（截断过长标题）
+    title_text = title[:12] + "..." if len(title) > 12 else title
+    draw.text((50, 180), title_text, fill=(255, 255, 255), font=font_large)
+    draw.text((50, 260), "疯魔老卫 | 科技洞察", fill=(200, 200, 200), font=font_small)
+
+    # 保存到内存
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=85)
+    buf.seek(0)
+    return buf
+
+
+def upload_cover_image(access_token, title, index=0):
+    """生成并上传封面图，返回 media_id"""
+    img_buf = generate_cover_image(title, index)
+
+    url = f"{BASE_URL}/material/add_material?access_token={access_token}&type=image"
+    files = {"media": ("cover.jpg", img_buf, "image/jpeg")}
+    resp = requests.post(url, files=files, timeout=60)
+    result = resp.json()
+
+    if "media_id" not in result:
+        raise Exception(f"上传封面图失败: {result}")
+
+    return result["media_id"]
+
 
 def search_hot_topics():
     """搜索科技热点（使用公开API）- 返回5个话题"""
@@ -310,44 +374,59 @@ def main():
         # 1. 获取 access_token
         print("\n[1/4] 获取 access_token...")
         token = get_access_token()
-        print(f"✅ 获取成功: {token[:20]}...")
+        print(f"成功: {token[:20]}...")
         
         # 2. 搜索热点（获取5个话题）
         print("\n[2/4] 搜索科技热点...")
         topics = search_hot_topics()
-        print(f"✅ 找到 {len(topics)} 个话题")
+        print(f"找到 {len(topics)} 个话题")
         
         # 3. 生成并上传5篇文章
         print("\n[3/4] 生成并上传文章...")
         success_count = 0
-        
+
+        # 先批量上传所有封面图
+        print("  上传封面图...")
+        cover_ids = {}
+        for i, topic in enumerate(topics[:5]):
+            try:
+                mid = upload_cover_image(token, topic['title'], i)
+                cover_ids[i] = mid
+                print(f"  封面 {i+1}/5 上传成功")
+            except Exception as e:
+                print(f"  封面 {i+1} 失败: {e}")
+                cover_ids[i] = ''
+
         for i, topic in enumerate(topics[:5], 1):
             print(f"\n--- 文章 {i}/5 ---")
             print(f"话题: {topic['title']}")
-            
+
             try:
                 # 生成文章
                 article_text = generate_article(topic)
-                print(f"  ✅ 文章生成完成，字数: {len(article_text)}")
-                
+                print(f"  文章生成完成，字数: {len(article_text)}")
+
                 # 转换为微信HTML
                 html_content = convert_to_wechat_html(article_text)
-                
-                # 上传草稿
-                media_id = add_draft(token, topic['title'], html_content)
-                print(f"  ✅ 上传成功! media_id: {media_id}")
-                
+
+                # 获取封面 media_id
+                thumb_id = cover_ids.get(i - 1, '')
+
+                # 上传草稿（带封面）
+                media_id = add_draft(token, topic['title'], html_content, thumb_id)
+                print(f"  上传成功! media_id: {media_id}")
+
                 success_count += 1
-                
+
             except Exception as e:
-                print(f"  ❌ 文章 {i} 失败: {e}")
+                print(f"  文章 {i} 失败: {e}")
                 continue
         
-        print(f"\n✅ 完成: {success_count}/5 篇文章上传成功")
+        print(f"\n完成: {success_count}/5 篇文章上传成功")
         
         # 4. 保存日志
         print("\n[4/4] 保存执行日志...")
-        log_file = f"/tmp/publish_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        log_file = os.path.join(TMP_DIR, f"publish_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
         with open(log_file, 'w') as f:
             f.write(f"执行时间: {datetime.now()}\n")
             f.write(f"成功上传: {success_count}/5 篇\n")
@@ -356,12 +435,12 @@ def main():
                 f.write(f"  {i}. {topic['title']}\n")
         
         print("\n" + "=" * 60)
-        print("🎉 发布任务完成！")
+        print("发布任务完成！")
         print("=" * 60)
         print(f"\n请登录 https://mp.weixin.qq.com 查看草稿")
         
     except Exception as e:
-        print(f"\n❌ 错误: {e}")
+        print(f"\n错误: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
