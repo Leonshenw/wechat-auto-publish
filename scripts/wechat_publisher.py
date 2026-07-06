@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 微信公众号自动发布脚本 - GitHub Actions 版本
+功能：每天自动生成5篇科技热点文章，含封面图、配图、流量主广告
 """
 
 import os
@@ -10,6 +11,7 @@ import json
 import requests
 from datetime import datetime
 import tempfile
+import io
 
 # 临时文件目录（兼容 Windows/Linux）
 TMP_DIR = tempfile.gettempdir()
@@ -21,82 +23,211 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 BASE_URL = "https://api.weixin.qq.com/cgi-bin"
 
-def get_access_token():
-    """获取 access_token"""
-    import tempfile
-    token_file = os.path.join(tempfile.gettempdir(), "wechat_token.json")
-    
-    # 检查缓存
-    if os.path.exists(token_file):
-        with open(token_file, 'r') as f:
-            data = json.load(f)
-            if datetime.now().timestamp() < data.get('expires_at', 0) - 300:
-                return data['access_token']
-    
-    url = f"{BASE_URL}/token?grant_type=client_credential&appid={WECHAT_APPID}&secret={WECHAT_APPSECRET}"
-    resp = requests.get(url, timeout=10)
-    result = resp.json()
-    
-    if "access_token" not in result:
-        raise Exception(f"获取 access_token 失败: {result}")
-    
-    token = result["access_token"]
-    expires_in = result.get("expires_in", 7200)
-    
-    with open(token_file, 'w') as f:
-        json.dump({
-            'access_token': token,
-            'expires_at': datetime.now().timestamp() + expires_in
-        }, f)
-    
-    return token
+# ============================================================
+# 中文字体加载（兼容 Windows / Linux / GitHub Actions）
+# ============================================================
+def get_chinese_font(size=40):
+    """获取中文字体，兼容多平台"""
+    from PIL import ImageFont
+
+    # Windows 系统字体路径候选
+    windows_fonts = [
+        "C:/Windows/Fonts/msyh.ttc",      # 微软雅黑
+        "C:/Windows/Fonts/simhei.ttf",    # 黑体
+        "C:/Windows/Fonts/simsun.ttc",    # 宋体
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+
+    # Linux / GitHub Actions 候选
+    linux_fonts = [
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",   # 文泉驿微米黑
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    ]
+
+    all_fonts = windows_fonts + linux_fonts
+
+    for font_path in all_fonts:
+        if os.path.exists(font_path):
+            try:
+                return ImageFont.truetype(font_path, size)
+            except:
+                continue
+
+    # 如果都没有，尝试下载中文字体（GitHub Actions 环境）
+    try:
+        font_dir = os.path.join(TMP_DIR, "fonts")
+        os.makedirs(font_dir, exist_ok=True)
+        font_file = os.path.join(font_dir, "NotoSansSC-Regular.ttf")
+
+        if not os.path.exists(font_file):
+            print("    [下载中文字体...]")
+            # 使用 Google Noto Sans SC（开源中文字体）
+            font_url = "https://github.com/google/fonts/raw/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf"
+            resp = requests.get(font_url, timeout=30)
+            if resp.status_code == 200:
+                with open(font_file, 'wb') as f:
+                    f.write(resp.content)
+            else:
+                # 备选：使用更小的字体文件
+                alt_url = "https://raw.githubusercontent.com/StellarCN/scp_zh/master/fonts/SimHei.ttf"
+                resp2 = requests.get(alt_url, timeout=30)
+                with open(font_file, 'wb') as f:
+                    f.write(resp2.content)
+
+        return ImageFont.truetype(font_file, size)
+    except Exception as e:
+        print(f"    [警告] 无法加载中文字体: {e}")
+
+    return ImageFont.load_default()
+
 
 def generate_cover_image(title, index=0):
-    """使用 PIL 生成简单的封面图"""
-    from PIL import Image, ImageDraw, ImageFont
-    import io
+    """生成带中文的封面图（900x500）"""
+    from PIL import Image, ImageDraw
 
-    # 创建 900x500 的图片（微信推荐封面尺寸）
     img = Image.new('RGB', (900, 500), color=(45, 55, 72))
     draw = ImageDraw.Draw(img)
 
-    # 渐变背景效果（简化版：纯色 + 装饰）
-    colors = [
-        (66, 153, 225),   # 蓝
-        (237, 100, 166),  # 粉
-        (72, 187, 120),   # 绿
-        (236, 201, 75),   # 黄
-        (159, 122, 234),  # 紫
+    # 配色方案 - 科技感渐变色
+    color_schemes = [
+        {"bg": (30, 58, 138),   "accent": (59, 130, 246)},    # 深蓝
+        {"bg": (88, 28, 135),   "accent": (168, 85, 247)},    # 深紫
+        {"bg": (6, 78, 59),     "accent": (34, 197, 94)},     # 深绿
+        {"bg": (120, 53, 15),   "accent": (245, 158, 11)},    # 深橙
+        {"bg": (83, 31, 33),    "accent": (239, 68, 68)},     # 深红
     ]
-    base_color = colors[index % len(colors)]
+    scheme = color_schemes[index % len(color_schemes)]
 
-    # 绘制装饰矩形
-    draw.rectangle([0, 0, 900, 500], fill=base_color)
-    # 右下角深色装饰块
-    draw.rectangle([600, 300, 900, 500], fill=(0, 0, 0, 80))
+    # 绘制背景渐变效果（用矩形模拟）
+    draw.rectangle([0, 0, 900, 500], fill=scheme["bg"])
 
-    # 尝试加载字体
-    try:
-        font_large = ImageFont.truetype("arial.ttf", 48)
-        font_small = ImageFont.truetype("arial.ttf", 24)
-    except:
-        font_large = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+    # 装饰性几何图形 - 右侧大圆
+    draw.ellipse([650, 100, 1100, 550], fill=scheme["accent"])
+    # 半透明覆盖
+    overlay = Image.new('RGBA', (900, 500), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([0, 350, 900, 500], fill=(0, 0, 0, 160))
+    img.paste(Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB'), (0, 0))
 
-    # 绘制标题文字（截断过长标题）
-    title_text = title[:12] + "..." if len(title) > 12 else title
-    draw.text((50, 180), title_text, fill=(255, 255, 255), font=font_large)
-    draw.text((50, 260), "疯魔老卫 | 科技洞察", fill=(200, 200, 200), font=font_small)
+    # 重新获取 draw 对象
+    draw = ImageDraw.Draw(img)
 
-    # 保存到内存
+    # 加载中文字体
+    font_title = get_chinese_font(52)
+    font_sub = get_chinese_font(26)
+    font_brand = get_chinese_font(22)
+
+    # 标题文字（截断）
+    title_text = title[:10] + ".." if len(title) > 10 else title
+    draw.text((60, 170), title_text, fill=(255, 255, 255), font=font_title)
+    # 副标题线
+    draw.rectangle([60, 245, 200, 249], fill=scheme["accent"])
+    # 品牌名
+    draw.text((60, 270), "疯魔老卫 | 科技洞察", fill=(180, 190, 200), font=font_brand)
+
+    # 保存到 BytesIO
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=90)
+    buf.seek(0)
+    return buf
+
+
+def generate_article_image(topic_title, index=0):
+    """生成文章内配图（800x450）- 科技风格"""
+    from PIL import Image, ImageDraw
+
+    img = Image.new('RGB', (800, 450), color=(240, 243, 247))
+    draw = ImageDraw.Draw(img)
+
+    # 不同主题不同配色
+    themes = [
+        ("AI", (59, 130, 246), "人工智能"),
+        ("Quantum", (139, 92, 246), "量子计算"),
+        ("Auto", (16, 185, 129), "自动驾驶"),
+        ("Meta", (236, 72, 153), "元宇宙"),
+        ("5G", (245, 158, 11), "通信技术"),
+    ]
+
+    theme_name, accent_color, label = themes[index % len(themes)]
+
+    # 背景
+    draw.rectangle([0, 0, 800, 450], fill=(255, 255, 255))
+
+    # 左侧色块装饰
+    draw.rectangle([0, 0, 12, 450], fill=accent_color)
+
+    # 中央图案 - 抽象几何
+    cx, cy = 400, 200
+    # 大圆环
+    draw.ellipse([cx-120, cy-80, cx+120, cy+80], outline=accent_color + (100,), width=3)
+    # 内部小方块
+    draw.rectangle([cx-50, cy-30, cx+50, cy+30], fill=accent_color)
+    # 连接线
+    draw.line([cx-120, cy, cx-50, cy], fill=accent_color, width=2)
+    draw.line([cx+50, cy, cx+120, cy], fill=accent_color, width=2)
+
+    # 底部信息栏
+    draw.rectangle([0, 370, 800, 450], fill=(248, 250, 252))
+    draw.line([0, 370, 800, 370], fill=(226, 232, 240), width=1)
+
+    # 加载中文字体
+    font_label = get_chinese_font(28)
+    font_topic = get_chinese_font(20)
+
+    # 主题标签
+    draw.text((60, 395), label, fill=(55, 65, 81), font=font_label)
+
+    # 话题名称
+    topic_short = topic_title[:16] + ".." if len(topic_title) > 16 else topic_title
+    draw.text((220, 400), topic_short, fill=(107, 114, 128), font=font_topic)
+
+    # 右下角水印
+    font_watermark = get_chinese_font(16)
+    draw.text((620, 415), "@疯魔老卫", fill=(156, 163, 175), font=font_watermark)
+
+    # 保存
     buf = io.BytesIO()
     img.save(buf, format='JPEG', quality=85)
     buf.seek(0)
     return buf
 
 
+# ============================================================
+# 微信 API 相关
+# ============================================================
+
+def get_access_token():
+    """获取 access_token"""
+    token_file = os.path.join(TMP_DIR, "wechat_token.json")
+
+    if os.path.exists(token_file):
+        with open(token_file, 'r') as f:
+            data = json.load(f)
+            if datetime.now().timestamp() < data.get('expires_at', 0) - 300:
+                return data['access_token']
+
+    url = f"{BASE_URL}/token?grant_type=client_credential&appid={WECHAT_APPID}&secret={WECHAT_APPSECRET}"
+    resp = requests.get(url, timeout=10)
+    result = resp.json()
+
+    if "access_token" not in result:
+        raise Exception(f"获取 access_token 失败: {result}")
+
+    token = result["access_token"]
+    expires_in = result.get("expires_in", 7200)
+
+    with open(token_file, 'w') as f:
+        json.dump({
+            'access_token': token,
+            'expires_at': datetime.now().timestamp() + expires_in
+        }, f)
+
+    return token
+
+
 def upload_cover_image(access_token, title, index=0):
-    """生成并上传封面图，返回 media_id"""
+    """生成并上传封面图到素材库，返回 media_id"""
     img_buf = generate_cover_image(title, index)
 
     url = f"{BASE_URL}/material/add_material?access_token={access_token}&type=image"
@@ -110,12 +241,38 @@ def upload_cover_image(access_token, title, index=0):
     return result["media_id"]
 
 
+def upload_article_images(access_token, title, index=0, count=3):
+    """生成并上传文章配图到微信图床，返回 URL 列表"""
+    urls = []
+    url = f"{BASE_URL}/media/uploadimg?access_token={access_token}"
+
+    for i in range(count):
+        try:
+            img_buf = generate_article_image(title, index * 3 + i)
+            files = {"media": (f"article_{i}.jpg", img_buf, "image/jpeg")}
+            resp = requests.post(url, files=files, timeout=60)
+            result = resp.json()
+
+            if "url" in result:
+                urls.append(result["url"])
+                print(f"    配图 {i+1}/{count} 上传成功")
+            else:
+                print(f"    配图 {i+1} 上传失败: {result}")
+        except Exception as e:
+            print(f"    配图 {i+1} 异常: {e}")
+
+    return urls
+
+
+# ============================================================
+# 热点搜索与文章生成
+# ============================================================
+
 def search_hot_topics():
-    """搜索科技热点（使用公开API）- 返回5个话题"""
+    """搜索科技热点 - 返回5个话题"""
     topics = []
-    
+
     try:
-        # 方法1: 使用头条API
         url = "https://v.api.aa1.cn/api/toutiao-max/?type=科技"
         resp = requests.get(url, timeout=10)
         data = resp.json()
@@ -130,9 +287,8 @@ def search_hot_topics():
                 return topics[:5]
     except:
         pass
-    
+
     try:
-        # 方法2: 使用另一个新闻源
         url = "https://api.vvhan.com/api/hotlist?type=zhihuHot"
         resp = requests.get(url, timeout=10)
         data = resp.json()
@@ -147,81 +303,72 @@ def search_hot_topics():
                 return topics[:5]
     except:
         pass
-    
-    # 如果API都失败，使用默认话题列表
+
+    # 默认话题
     default_topics = [
-        {'title': 'AI大模型最新突破', 'url': '', 'summary': '人工智能大模型技术持续突破，应用场景不断扩展'},
-        {'title': '量子计算商业化进展', 'url': '', 'summary': '量子计算技术逐步走向商业化应用'},
-        {'title': '自动驾驶技术革新', 'url': '', 'summary': '自动驾驶技术迎来新一轮技术革新'},
-        {'title': '元宇宙产业发展趋势', 'url': '', 'summary': '元宇宙产业生态逐步完善，应用场景丰富'},
-        {'title': '5G应用落地案例', 'url': '', 'summary': '5G技术在各行业的应用案例不断涌现'}
+        {'title': 'AI大模型最新突破', 'url': '', 'summary': '人工智能大模型技术持续突破'},
+        {'title': '量子计算商业化进展', 'url': '', 'summary': '量子计算逐步走向商用'},
+        {'title': '自动驾驶技术革新', 'url': '', 'summary': '自动驾驶迎来新突破'},
+        {'title': '元宇宙产业发展趋势', 'url': '', 'summary': '元宇宙生态加速完善'},
+        {'title': '5G应用落地案例', 'url': '', 'summary': '5G应用场景持续扩展'},
     ]
-    
-    # 补充到5个
+
     while len(topics) < 5:
-        if len(default_topics) > 0:
+        if default_topics:
             topics.append(default_topics.pop(0))
         else:
-            topics.append({
-                'title': f'科技热点{len(topics)+1}',
-                'url': '',
-                'summary': '科技行业最新动态'
-            })
-    
+            topics.append({'title': f'科技热点{len(topics)+1}', 'url': '', 'summary': ''})
+
     return topics[:5]
 
+
 def generate_article(topic):
-    """使用 OpenAI API 生成文章"""
-    if not OPENAI_API_KEY:
-        # 如果没有 API key，返回模板文章
-        return generate_template_article(topic)
-    
-    prompt = f"""
-    根据以下科技热点，撰写一篇刘润风格的深度文章：
+    """生成文章内容"""
+    if OPENAI_API_KEY:
+        try:
+            prompt = f"""根据以下科技热点，撰写一篇刘润风格的深度文章：
 
-    话题：{topic['title']}
-    摘要：{topic['summary']}
+话题：{topic['title']}
+摘要：{topic['summary']}
 
-    要求：
-    - 开篇从一个具体现象/故事切入（200字左右）
-    - 引出独特的商业或科技洞察
-    - 用2-3个真实案例论证观点
-    - 数据支撑，适当引用事实
-    - 结论明确，给出行动建议
-    - 善用小标题分隔章节
-    - 语言简洁有力，逻辑清晰
-    - 字数1500-2000字
-    - 不要使用大量emoji
-    - 文章末尾不加任何 #话题标签
-    """
+要求：
+- 开篇从一个具体现象/故事切入（200字左右）
+- 引出独特的商业或科技洞察
+- 用2-3个真实案例论证观点
+- 数据支撑，适当引用事实
+- 结论明确，给出行动建议
+- 善用小标题分隔章节
+- 语言简洁有力，逻辑清晰
+- 字数1500-2000字
+- 不要使用emoji
+- 文章末尾不加任何话题标签"""
 
-    headers = {
-        'Authorization': f'Bearer {OPENAI_API_KEY}',
-        'Content-Type': 'application/json'
-    }
-    
-    payload = {
-        'model': 'gpt-3.5-turbo',
-        'messages': [
-            {'role': 'system', 'content': '你是一位资深科技商业分析师，擅长撰写刘润风格的深度文章。'},
-            {'role': 'user', 'content': prompt}
-        ],
-        'temperature': 0.7,
-        'max_tokens': 3000
-    }
-    
-    resp = requests.post('https://api.openai.com/v1/chat/completions',
-                        headers=headers, json=payload, timeout=60)
-    
-    if resp.status_code == 200:
-        return resp.json()['choices'][0]['message']['content']
-    else:
-        return generate_template_article(topic)
+            headers = {
+                'Authorization': f'Bearer {OPENAI_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            payload = {
+                'model': 'gpt-3.5-turbo',
+                'messages': [
+                    {'role': 'system', 'content': '你是一位资深科技商业分析师，擅长撰写刘润风格的深度文章。'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                'temperature': 0.7,
+                'max_tokens': 3000
+            }
+            resp = requests.post('https://api.openai.com/v1/chat/completions',
+                                headers=headers, json=payload, timeout=60)
+            if resp.status_code == 200:
+                return resp.json()['choices'][0]['message']['content']
+        except:
+            pass
+
+    return generate_template_article(topic)
+
 
 def generate_template_article(topic):
-    """生成模板文章（当没有 OpenAI API 时使用）"""
-    return f"""
-# {topic['title']}
+    """模板文章（无 OpenAI API 时使用）"""
+    return f"""# {topic['title']}
 
 ## 引言
 
@@ -259,189 +406,245 @@ def generate_template_article(topic):
 
 ## 结语
 
-{ topic['title']}不仅仅是一个热点话题，更是中国科技创新的一个缩影。在这个过程中，既有挑战，也有机遇。关键在于，我们能否抓住这个历史性的窗口期，实现从"跟跑"到"并跑"甚至"领跑"的跨越。
+{topic['title']}不仅仅是一个热点话题，更是中国科技创新的一个缩影。在这个过程中，既有挑战，也有机遇。关键在于，我们能否抓住这个历史性的窗口期，实现从"跟跑"到"并跑"甚至"领跑"的跨越。
 
-对于企业和从业者来说，现在需要做的是：保持敏锐的洞察力，持续提升技术能力，并在正确的时间做出正确的决策。
-""".strip()
+对于企业和从业者来说，现在需要做的是：保持敏锐的洞察力，持续提升技术能力，并在正确的时间做出正确的决策。""".strip()
 
-def convert_to_wechat_html(article_text):
-    """将文章转换为微信公众号HTML格式"""
-    # 简单转换：标题用 h2，段落用 p
+
+# ============================================================
+# HTML 转换（含流量主广告 + 配图插入）
+# ============================================================
+
+def convert_to_wechat_html(article_text, image_urls=None):
+    """
+    将 Markdown 文本转换为微信 HTML 格式
+    - 插入流量主广告位
+    - 在合适位置插入配图
+    """
     lines = article_text.split('\n')
     html_lines = []
-    
-    for line in lines:
+
+    # 图片索引
+    img_idx = 0
+
+    for line_idx, line in enumerate(lines):
         line = line.strip()
         if not line:
             continue
-        
+
         if line.startswith('# '):
             title = line[2:].strip()
             html_lines.append(f'<h2 style="font-size:20px;font-weight:bold;margin:24px 0 12px 0;color:rgb(15,17,21);">{title}</h2>')
         elif line.startswith('## '):
             subtitle = line[3:].strip()
-            html_lines.append(f'<h2 style="font-size:18px;font-weight:bold;margin:24px 0 12px 0;color:rgb(15,17,21);">{subtitle}</h2>')
+            html_lines.append(f'<h2 style="font-size:18px;font-weight:bold;margin:24px 0 12px 0;color:rgb(51,51,51);border-left:4px solid #4a90d9;padding-left:12px;">{subtitle}</h2>')
         else:
-            # 检查是否有加粗
-            line = line.replace('**', '<strong>').replace('**', '</strong>')
-            html_lines.append(f'<p style="margin:16px 0px;color:rgb(15,17,21);font-size:16px;line-height:1.75;">{line}</p>')
-    
-    # 插入广告位
-    ad1 = '''
-    <section style="margin:20px 0;padding:15px;background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);border-radius:8px;">
-    <p style="color:#fff;font-size:14px;margin:0;">🔥 推荐阅读</p>
-    <p style="color:rgba(255,255,255,0.9);font-size:13px;margin:8px 0 0 0;">关注「疯魔老卫」，每日获取最新科技洞察与商业分析</p>
-    </section>
-    '''
-    
-    ad2 = '''
-    <section style="margin:25px 0;padding:15px;background-color:#f8f9fa;border-left:4px solid #e74c3c;border-radius:4px;">
-    <p style="color:#999;font-size:13px;margin:0 0 5px 0;">— 广告位 —</p>
-    <p style="color:#666;font-size:14px;margin:0;">📢 广告位招租 | 联系商务合作请留言</p>
-    </section>
-    '''
-    
-    ad3 = '''
-    <section style="margin:25px 0;padding:18px;background-color:#f0f7ff;border-radius:8px;text-align:center;">
-    <p style="color:#333;font-size:15px;font-weight:bold;margin:0 0 10px 0;">👇 点击下方卡片查看推荐商品 👇</p>
-    <p style="color:#666;font-size:13px;margin:0;">本文由「疯魔老卫」原创出品 | 每日更新科技商业洞察</p>
-    </section>
-    '''
-    
-    # 在文章中间插入广告
+            # 处理加粗
+            processed = line.replace('**', '<strong>').replace('**', '</strong>')
+            html_lines.append(f'<p style="margin:16px 0px;color:rgb(35,35,35);font-size:16px;line-height:1.8;text-align:justify;">{processed}</p>')
+
+        # ===== 在特定位置插入配图 =====
+        if image_urls and img_idx < len(image_urls):
+            total = len(html_lines)
+            # 在第1个小标题后、中间段落、案例分析处插入图片
+            insert_positions = [3, total // 2, total - 4]
+            if line_idx > 0 and line_idx % (len(lines) // 4) == 0 and img_idx < len(image_urls):
+                img_url = image_urls[img_idx]
+                html_lines.append(f'''
+<section style="margin:20px 0;text-align:center;">
+<img src="{img_url}" style="width:100%;border-radius:8px;" />
+<p style="color:#999;font-size:13px;margin:8px 0 0 0;">图片来源：疯魔老卫</p>
+</section>''')
+                img_idx += 1
+
+    # 补充剩余图片（如果有）
+    while image_urls and img_idx < len(image_urls):
+        img_url = image_urls[img_idx]
+        html_lines.append(f'''
+<section style="margin:20px 0;text-align:center;">
+<img src="{img_url}" style="width:100%;border-radius:8px;" />
+<p style="color:#999;font-size:13px;margin:8px 0 0 0;">图片来源：疯魔老卫</p>
+</section>''')
+        img_idx += 1
+
+    # ===== 流量主广告位（文中广告）=====
+    traffic_ad_1 = '''
+<section style="margin:25px 0;padding:0;">
+<!-- 流量主广告位 - 文中Banner -->
+<div style="background-color:#f7f7f7;border:1px dashed #ccc;border-radius:6px;padding:20px;text-align:center;">
+<p style="color:#bbb;font-size:12px;margin:0 0 8px 0;">-- 广告 --</p>
+<p style="color:#666;font-size:14px;margin:0;font-weight:bold;">点击查看详情</p>
+</div>
+</section>'''
+
+    traffic_ad_2 = '''
+<section style="margin:25px 0;padding:0;">
+<!-- 流量主广告位 - 卡片式 -->
+<div style="background:linear-gradient(to right,#f8f9fa,#fff);border-radius:8px;padding:18px;border:1px solid #eee;display:flex;align-items:center;">
+<div style="flex:1;">
+<p style="margin:0;color:#333;font-size:15px;font-weight:bold;">推荐阅读</p>
+<p style="margin:6px 0 0 0;color:#888;font-size:13px;">关注「疯魔老卫」，每日获取最新科技洞察</p>
+</div>
+<div style="width:60px;height:60px;background:#4a90d9;border-radius:8px;"></div>
+</div>
+</section>'''
+
+    # ===== 自定义广告位 =====
+    custom_ad = '''
+<section style="margin:25px 0;padding:18px;background-color:#fefce8;border-radius:8px;border-left:4px solid #eab308;">
+<p style="color:#854d0e;font-size:14px;margin:0 0 6px 0;font-weight:bold;">商务合作</p>
+<p style="color:#a16207;font-size:13px;margin:0;">广告位招租 | 联系方式请留言或私信</p>
+</section>'''
+
+    # ===== 底部关注引导 =====
+    footer_ad = '''
+<section style="margin:30px 0 10px 0;padding:24px;background:linear-gradient(135deg,#1e3a5f 0%,#2d5a87 100%);border-radius:12px;text-align:center;">
+<p style="color:#fff;font-size:18px;font-weight:bold;margin:0 0 10px 0;">关注「疯魔老卫」</p>
+<p style="color:rgba(255,255,255,0.8);font-size:14px;margin:0;">每日更新科技商业洞察 | 深度分析 | 行业趋势</p>
+</section>
+
+<section style="margin:15px 0;text-align:center;">
+<!-- 流量主底部广告位 -->
+<p style="color:#ddd;font-size:12px;margin:0;">广告</p>
+</section>'''
+
+    # 在文章中插入广告和配图
     total_lines = len(html_lines)
-    if total_lines > 6:
-        html_lines.insert(total_lines // 3, ad1)
-        html_lines.insert(total_lines * 2 // 3, ad2)
-    
-    html_lines.append(ad3)
-    
+    if total_lines > 8:
+        # 第1个位置（约1/3处）：插入流量主广告1
+        pos1 = max(3, total_lines // 3)
+        html_lines.insert(pos1, traffic_ad_1)
+
+        # 第2个位置（约2/3处）：插入自定义广告
+        pos2 = min(total_lines * 2 // 3, total_lines - 2)
+        html_lines.insert(pos2, traffic_ad_2)
+
+        # 第3个位置（末尾前）：插入商务合作
+        html_lines.insert(total_lines, custom_ad)
+
+    # 追加底部
+    html_lines.append(footer_ad)
+
     return '\n'.join(html_lines)
 
-def upload_article_image(access_token, image_url):
-    """上传图文消息内的图片，获取URL"""
-    if image_url.startswith('http'):
-        img_resp = requests.get(image_url, timeout=30)
-        img_resp.raise_for_status()
-        files = {"media": ("img.jpg", img_resp.content, "image/jpeg")}
-    else:
-        with open(image_url, 'rb') as f:
-            files = {"media": ("img.jpg", f.read(), "image/jpeg")}
-    
-    url = f"{BASE_URL}/media/uploadimg?access_token={access_token}"
-    upload_resp = requests.post(url, files=files, timeout=60)
-    result = upload_resp.json()
-    
-    if "url" not in result:
-        return None
-    
-    return result["url"]
 
 def add_draft(access_token, title, content, thumb_media_id=''):
     """新建草稿"""
     url = f"{BASE_URL}/draft/add?access_token={access_token}"
-    
+
     article = {
         "title": title,
         "author": "老卫",
-        "digest": title[:50],
+        "digest": title[:54],
         "content": content,
         "need_open_comment": 1,
         "only_fans_can_comment": 0
     }
-    
+
     if thumb_media_id:
         article["thumb_media_id"] = thumb_media_id
-    
+
     payload = {"articles": [article]}
     headers = {"Content-Type": "application/json"}
     resp = requests.post(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                         headers=headers, timeout=30)
     result = resp.json()
-    
+
     if "media_id" not in result:
         raise Exception(f"新建草稿失败: {result}")
-    
+
     return result["media_id"]
 
-def main():
-    """主函数 - 生成5篇热点文章"""
-    print("=" * 60)
-    print("微信公众号自动发布 - GitHub Actions 版本")
-    print("=" * 60)
-    
-    try:
-        # 1. 获取 access_token
-        print("\n[1/4] 获取 access_token...")
-        token = get_access_token()
-        print(f"成功: {token[:20]}...")
-        
-        # 2. 搜索热点（获取5个话题）
-        print("\n[2/4] 搜索科技热点...")
-        topics = search_hot_topics()
-        print(f"找到 {len(topics)} 个话题")
-        
-        # 3. 生成并上传5篇文章
-        print("\n[3/4] 生成并上传文章...")
-        success_count = 0
 
-        # 先批量上传所有封面图
-        print("  上传封面图...")
+# ============================================================
+# 主流程
+# ============================================================
+
+def main():
+    """主函数 - 生成5篇热点文章（含封面、配图、广告）"""
+    print("=" * 60)
+    print("微信公众号自动发布 v2.0")
+    print("=" * 60)
+
+    try:
+        # Step 1: 获取 token
+        print("\n[1/5] 获取 access_token...")
+        token = get_access_token()
+        print(f"  OK: {token[:20]}...")
+
+        # Step 2: 搜索热点
+        print("\n[2/5] 搜索科技热点...")
+        topics = search_hot_topics()
+        print(f"  找到 {len(topics)} 个话题:")
+        for i, t in enumerate(topics, 1):
+            print(f"    {i}. {t['title']}")
+
+        # Step 3: 上传所有封面图
+        print("\n[3/5] 生成并上传封面图...")
         cover_ids = {}
         for i, topic in enumerate(topics[:5]):
             try:
                 mid = upload_cover_image(token, topic['title'], i)
                 cover_ids[i] = mid
-                print(f"  封面 {i+1}/5 上传成功")
+                print(f"  [{i+1}/5] 封面上传成功")
             except Exception as e:
-                print(f"  封面 {i+1} 失败: {e}")
+                print(f"  [{i+1}/5] 封面失败: {e}")
                 cover_ids[i] = ''
 
+        # Step 4: 生成文章 + 配图 + 上传草稿
+        print("\n[4/5] 生成文章并上传草稿...")
+        success_count = 0
+
         for i, topic in enumerate(topics[:5], 1):
-            print(f"\n--- 文章 {i}/5 ---")
-            print(f"话题: {topic['title']}")
-
+            print(f"\n  --- 文章 {i}/5: {topic['title']} ---")
             try:
-                # 生成文章
+                # 4a. 生成文章文本
                 article_text = generate_article(topic)
-                print(f"  文章生成完成，字数: {len(article_text)}")
+                print(f"  文本生成完成 ({len(article_text)}字)")
 
-                # 转换为微信HTML
-                html_content = convert_to_wechat_html(article_text)
+                # 4b. 生成并上传配图
+                print("  生成配图...")
+                img_urls = upload_article_images(token, topic['title'], i - 1, count=3)
+                print(f"  获得 {len(img_urls)} 张配图URL")
 
-                # 获取封面 media_id
+                # 4c. 转换为微信HTML（含广告+配图）
+                html_content = convert_to_wechat_html(article_text, img_urls)
+
+                # 4d. 上传草稿
                 thumb_id = cover_ids.get(i - 1, '')
-
-                # 上传草稿（带封面）
                 media_id = add_draft(token, topic['title'], html_content, thumb_id)
-                print(f"  上传成功! media_id: {media_id}")
-
+                print(f"  草稿上传成功! media_id: {media_id}")
                 success_count += 1
 
             except Exception as e:
-                print(f"  文章 {i} 失败: {e}")
+                print(f"  失败: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
-        
-        print(f"\n完成: {success_count}/5 篇文章上传成功")
-        
-        # 4. 保存日志
-        print("\n[4/4] 保存执行日志...")
+
+        print(f"\n  结果: {success_count}/5 篇成功")
+
+        # Step 5: 保存日志
+        print("\n[5/5] 保存执行日志...")
         log_file = os.path.join(TMP_DIR, f"publish_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-        with open(log_file, 'w') as f:
+        with open(log_file, 'w', encoding='utf-8') as f:
             f.write(f"执行时间: {datetime.now()}\n")
-            f.write(f"成功上传: {success_count}/5 篇\n")
+            f.write(f"成功上传: {success_count}/5\n")
             f.write(f"话题列表:\n")
-            for i, topic in enumerate(topics[:5], 1):
-                f.write(f"  {i}. {topic['title']}\n")
-        
+            for i, t in enumerate(topics[:5], 1):
+                f.write(f"  {i}. {t['title']}\n")
+
         print("\n" + "=" * 60)
         print("发布任务完成！")
         print("=" * 60)
-        print(f"\n请登录 https://mp.weixin.qq.com 查看草稿")
-        
+        print(f"\n请登录 https://mp.weixin.qq.com 查看草稿箱")
+
     except Exception as e:
-        print(f"\n错误: {e}")
+        print(f"\n致命错误: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
