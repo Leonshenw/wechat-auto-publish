@@ -58,7 +58,7 @@ git push origin main
 | Name | Value | 说明 |
 |------|-------|------|
 | `WECHAT_APPID` | `wx22254d05de1f5809` | 公众号 AppID |
-| `WECHAT_APPSECRET` | `9kQK7UXFCfHP7CxLiTbrDzyNsCXCfPksJME5XrbPcCoD` | 公众号 AppSecret |
+| `WECHAT_APPSECRET` | `3c07f2ed3a74101b36f4dbbfb8116cd7` | 公众号 AppSecret |
 | `OPENAI_API_KEY` | `sk-...` | OpenAI API Key（可选） |
 
 **注意：** 如果没有 OpenAI API Key，脚本会使用模板文章。
